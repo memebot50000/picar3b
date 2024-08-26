@@ -2,13 +2,14 @@ from gpiozero import Motor
 from evdev import InputDevice, categorize, ecodes
 import time
 import select
+import os
 
 def rc_car_control():
     drive_motor = Motor(forward=17, backward=27, enable=12)
     steer_motor = Motor(forward=22, backward=23, enable=13)
 
     # Find the WS2000 dongle
-    devices = [InputDevice(path) for path in InputDevice.list_devices()]
+    devices = [InputDevice(fn) for fn in os.listdir("/dev/input") if fn.startswith("event")]
     for device in devices:
         if "Spektrum" in device.name:
             joystick = device
