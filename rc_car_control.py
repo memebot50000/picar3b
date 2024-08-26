@@ -1,26 +1,32 @@
 from gpiozero import Motor
-import pygame
+from evdev import InputDevice, categorize, ecodes
 import time
+import select
 
 def rc_car_control():
     drive_motor = Motor(forward=17, backward=27, enable=12)
     steer_motor = Motor(forward=22, backward=23, enable=13)
 
-    pygame.init()
-    pygame.joystick.init()
-
-    if pygame.joystick.get_count() == 0:
-        print("No joystick detected. Please connect the WS2000 dongle.")
+    # Find the WS2000 dongle
+    devices = [InputDevice(path) for path in InputDevice.list_devices()]
+    for device in devices:
+        if "Spektrum" in device.name:
+            joystick = device
+            break
+    else:
+        print("Spektrum WS2000 dongle not found. Please connect it and try again.")
         return
 
-    joystick = pygame.joystick.Joystick(0)
-    joystick.init()
+    print(f"Using device: {joystick.name}")
 
     def stop():
         drive_motor.stop()
         steer_motor.stop()
 
     def control_motors(throttle, steering):
+        throttle = (throttle - 127) / 127.0  # Convert to range -1 to 1
+        steering = (steering - 127) / 127.0  # Convert to range -1 to 1
+
         if throttle > 0:
             drive_motor.forward(abs(throttle))
         elif throttle < 0:
@@ -35,37 +41,31 @@ def rc_car_control():
         else:
             steer_motor.stop()
 
-    print("RC Car Control Ready. Use the WS2000 dongle to control the car. Press Q to quit.")
+    print("RC Car Control Ready. Use the WS2000 dongle to control the car. Press Ctrl+C to quit.")
 
-    running = True
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
+    throttle = 127
+    steering = 127
 
-        throttle = joystick.get_axis(1)  # Assuming axis 1 is throttle
-        steering = joystick.get_axis(0)  # Assuming axis 0 is steering
+    try:
+        while True:
+            r, w, x = select.select([joystick], [], [], 0.01)
+            if r:
+                for event in joystick.read():
+                    if event.type == ecodes.EV_ABS:
+                        if event.code == ecodes.ABS_Y:  # Throttle
+                            throttle = event.value
+                        elif event.code == ecodes.ABS_X:  # Steering
+                            steering = event.value
 
-        # Invert and scale the inputs if necessary
-        throttle = -throttle  # Invert if up is negative
-        
-        # Apply a small deadzone to prevent unwanted movement
-        if abs(throttle) < 0.1:
-            throttle = 0
-        if abs(steering) < 0.1:
-            steering = 0
+            control_motors(throttle, steering)
 
-        control_motors(throttle, steering)
-
-        # Check for quit button (assuming it's the first button)
-        if joystick.get_button(0):
-            running = False
-
-        time.sleep(0.01)  # Short delay to prevent overwhelming the system
-
-    stop()
-    pygame.quit()
-    print("RC Car Control stopped.")
+    except KeyboardInterrupt:
+        print("\nProgram interrupted by user. Exiting...")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        stop()
+        print("RC Car Control stopped.")
 
 if __name__ == "__main__":
     rc_car_control()
