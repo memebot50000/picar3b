@@ -9,11 +9,19 @@ def rc_car_control():
     steer_motor = Motor(forward=22, backward=23, enable=13)
 
     # Find the WS2000 dongle
-    devices = [InputDevice(fn) for fn in os.listdir("/dev/input") if fn.startswith("event")]
-    for device in devices:
-        if "Spektrum" in device.name:
-            joystick = device
-            break
+    devices = []
+    for fn in os.listdir("/dev/input"):
+        if fn.startswith("event"):
+            try:
+                device = InputDevice(os.path.join("/dev/input", fn))
+                if "Spektrum" in device.name:
+                    joystick = device
+                    break
+                devices.append(device)
+            except PermissionError:
+                print(f"Permission denied for /dev/input/{fn}. Try running with sudo.")
+            except Exception as e:
+                print(f"Error opening /dev/input/{fn}: {e}")
     else:
         print("Spektrum WS2000 dongle not found. Please connect it and try again.")
         return
