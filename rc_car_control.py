@@ -12,6 +12,9 @@ def find_spektrum_device():
             return device
     return None
 
+def normalize(value, min_val, max_val):
+    return (value - min_val) / (max_val - min_val)
+
 def rc_car_control():
     drive_motor = Motor(forward=17, backward=27, enable=12)
     steer_motor = Motor(forward=22, backward=23, enable=13)
@@ -28,27 +31,34 @@ def rc_car_control():
         steer_motor.stop()
 
     def control_motors(throttle, steering):
-        throttle = (throttle - 127) / 127.0  # Convert to range -1 to 1
-        steering = (steering - 127) / 127.0  # Convert to range -1 to 1
+        # Normalize throttle and steering to 0-1 range
+        throttle = normalize(throttle, joystick.absinfo(evdev.ecodes.ABS_Y).min, joystick.absinfo(evdev.ecodes.ABS_Y).max)
+        steering = normalize(steering, joystick.absinfo(evdev.ecodes.ABS_X).min, joystick.absinfo(evdev.ecodes.ABS_X).max)
+        
+        # Convert to -1 to 1 range
+        throttle = (throttle - 0.5) * 2
+        steering = (steering - 0.5) * 2
 
-        if throttle > 0:
-            drive_motor.forward(abs(throttle))
-        elif throttle < 0:
-            drive_motor.backward(abs(throttle))
-        else:
-            drive_motor.stop()
+        print(f"Throttle: {throttle:.2f}, Steering: {steering:.2f}")  # Debug print
 
-        if steering > 0:
-            steer_motor.forward(abs(steering))
-        elif steering < 0:
-            steer_motor.backward(abs(steering))
-        else:
-            steer_motor.stop()
+        try:
+            if throttle > 0:
+                drive_motor.forward(abs(throttle))
+            elif throttle < 0:
+                drive_motor.backward(abs(throttle))
+            else:
+                drive_motor.stop()
+
+            if steering > 0:
+                steer_motor.forward(abs(steering))
+            elif steering < 0:
+                steer_motor.backward(abs(steering))
+            else:
+                steer_motor.stop()
+        except ValueError as e:
+            print(f"Error controlling motors: {e}")
 
     print("RC Car Control Ready. Use the Spektrum controller to control the car. Press Ctrl+C to quit.")
-
-    throttle = 127
-    steering = 127
 
     try:
         for event in joystick.read_loop():
@@ -57,8 +67,7 @@ def rc_car_control():
                     throttle = event.value
                 elif event.code == evdev.ecodes.ABS_X:  # Steering
                     steering = event.value
-
-            control_motors(throttle, steering)
+                control_motors(throttle, steering)
 
     except KeyboardInterrupt:
         print("\nProgram interrupted by user. Exiting...")
