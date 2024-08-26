@@ -1,105 +1,71 @@
 from gpiozero import Motor
+import pygame
 import time
 
-# Set up the motors
-drive_motor = Motor(forward=17, backward=27, enable=12)
-steer_motor = Motor(forward=22, backward=23, enable=13)
+def rc_car_control():
+    drive_motor = Motor(forward=17, backward=27, enable=12)
+    steer_motor = Motor(forward=22, backward=23, enable=13)
 
-def stop():
-    drive_motor.stop()
-    steer_motor.stop()
+    pygame.init()
+    pygame.joystick.init()
 
-def forward(t):
-    '''drives car forward for t seconds'''
-    drive_motor.backward()
-    time.sleep(t)
-    drive_motor.stop()
+    if pygame.joystick.get_count() == 0:
+        print("No joystick detected. Please connect the WS2000 dongle.")
+        return
 
-def backward(t):
-    '''drives car backward for t seconds'''
-    drive_motor.forward()
-    time.sleep(t)
-    drive_motor.stop()
+    joystick = pygame.joystick.Joystick(0)
+    joystick.init()
 
-def left(d, t):
-    '''turns left going d direction for t seconds. d must be "w" or "s"'''
-    if d == "w":
-        steer_motor.forward()
-        forward(t)
+    def stop():
+        drive_motor.stop()
         steer_motor.stop()
-    elif d == "s":
-        steer_motor.forward()
-        backward(t)
-        steer_motor.stop()
-    else:
-        stop()
 
-def right(d, t):
-    '''turns right going d direction for t seconds. d must be "w" or "s"'''
-    if d == "w":
-        steer_motor.backward()
-        forward(t)
-        steer_motor.stop()
-    elif d == "s":
-        steer_motor.backward()
-        backward(t)
-        steer_motor.stop()
-    else:
-        stop()
+    def control_motors(throttle, steering):
+        if throttle > 0:
+            drive_motor.forward(abs(throttle))
+        elif throttle < 0:
+            drive_motor.backward(abs(throttle))
+        else:
+            drive_motor.stop()
 
-def test():
-    forward(0.5)
-    backward(0.5)
-    steer_motor.forward()
-    time.sleep(0.5)
-    steer_motor.stop()
-    steer_motor.backward()
-    time.sleep(0.5)
-    steer_motor.stop()
-    print("test completed")
+        if steering > 0:
+            steer_motor.forward(abs(steering))
+        elif steering < 0:
+            steer_motor.backward(abs(steering))
+        else:
+            steer_motor.stop()
 
-print("RC Car Control Ready. Enter W,A,S,D to control. Enter corresponding times after commands. Enter Q to quit. Enter T to test. Remember to put spaces between commands/times or the code will break.")
+    print("RC Car Control Ready. Use the WS2000 dongle to control the car. Press Q to quit.")
 
-while True:
-    kcmds = input("Enter command(s): ").lower()
-    tcmds = input("Enter time(s): ")
-    klst = kcmds.split()
-    tlst = tcmds.split()
-    tlst = [float(t) for t in tlst]  # Convert times to float
-    
-    try:
-        for i in range(len(klst)):
-            if klst[i] == 'w':
-                forward(tlst[i])
-            elif klst[i] == 's':
-                backward(tlst[i])
-            elif klst[i] == 'a':
-                if i > 0 and klst[i-1] == "w":
-                    left("w", tlst[i])
-                elif i > 0 and klst[i-1] == "s":
-                    left("s", tlst[i])
-                else:
-                    stop()
-            elif klst[i] == 'd':
-                if i > 0 and klst[i-1] == "w":
-                    right("w", tlst[i])
-                elif i > 0 and klst[i-1] == "s":
-                    right("s", tlst[i])
-                else:
-                    stop()
-            elif klst[i] == "t":
-                test()
-            elif klst[i] == 'q':
-                stop()
-                print("RC Car Control stopped.")
-                exit()
-            else:
-                stop()
-    except IndexError:
-        print("Error: Number of commands and times do not match.")
-    except ValueError:
-        print("Error: Invalid time input. Please enter numeric values for times.")
-    except Exception as e:
-        print(f"An error occurred: {str(e)}")
-    
-    time.sleep(0.1)  # Short delay to prevent overwhelming the system
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        throttle = joystick.get_axis(1)  # Assuming axis 1 is throttle
+        steering = joystick.get_axis(0)  # Assuming axis 0 is steering
+
+        # Invert and scale the inputs if necessary
+        throttle = -throttle  # Invert if up is negative
+        
+        # Apply a small deadzone to prevent unwanted movement
+        if abs(throttle) < 0.1:
+            throttle = 0
+        if abs(steering) < 0.1:
+            steering = 0
+
+        control_motors(throttle, steering)
+
+        # Check for quit button (assuming it's the first button)
+        if joystick.get_button(0):
+            running = False
+
+        time.sleep(0.01)  # Short delay to prevent overwhelming the system
+
+    stop()
+    pygame.quit()
+    print("RC Car Control stopped.")
+
+if __name__ == "__main__":
+    rc_car_control()
