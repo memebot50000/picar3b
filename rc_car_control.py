@@ -54,9 +54,9 @@ def rc_car_control():
             # Steering motor control
             if abs(steering) > 0.1:  # Add a small deadzone
                 if steering > 0:
-                    steer_motor.forward(steering)
+                    steer_motor.backward()
                 else:
-                    steer_motor.backward(-steering)
+                    steer_motor.forward()
             else:
                 steer_motor.stop()
 
