@@ -1,29 +1,24 @@
 from gpiozero import Motor
-from evdev import InputDevice, categorize, ecodes
+import evdev
 import time
-import select
-import os
+
+SPEKTRUM_VENDOR_ID = 0x0483
+SPEKTRUM_PRODUCT_ID = 0x572b
+
+def find_spektrum_device():
+    devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+    for device in devices:
+        if device.info.vendor == SPEKTRUM_VENDOR_ID and device.info.product == SPEKTRUM_PRODUCT_ID:
+            return device
+    return None
 
 def rc_car_control():
     drive_motor = Motor(forward=17, backward=27, enable=12)
     steer_motor = Motor(forward=22, backward=23, enable=13)
 
-    # Find the WS2000 dongle
-    devices = []
-    for fn in os.listdir("/dev/input"):
-        if fn.startswith("event"):
-            try:
-                device = InputDevice(os.path.join("/dev/input", fn))
-                if "Spektrum" in device.name:
-                    joystick = device
-                    break
-                devices.append(device)
-            except PermissionError:
-                print(f"Permission denied for /dev/input/{fn}. Try running with sudo.")
-            except Exception as e:
-                print(f"Error opening /dev/input/{fn}: {e}")
-    else:
-        print("Spektrum WS2000 dongle not found. Please connect it and try again.")
+    joystick = find_spektrum_device()
+    if not joystick:
+        print("Spektrum receiver not found. Please make sure it's connected.")
         return
 
     print(f"Using device: {joystick.name}")
@@ -50,21 +45,18 @@ def rc_car_control():
         else:
             steer_motor.stop()
 
-    print("RC Car Control Ready. Use the WS2000 dongle to control the car. Press Ctrl+C to quit.")
+    print("RC Car Control Ready. Use the Spektrum controller to control the car. Press Ctrl+C to quit.")
 
     throttle = 127
     steering = 127
 
     try:
-        while True:
-            r, w, x = select.select([joystick], [], [], 0.01)
-            if r:
-                for event in joystick.read():
-                    if event.type == ecodes.EV_ABS:
-                        if event.code == ecodes.ABS_Y:  # Throttle
-                            throttle = event.value
-                        elif event.code == ecodes.ABS_X:  # Steering
-                            steering = event.value
+        for event in joystick.read_loop():
+            if event.type == evdev.ecodes.EV_ABS:
+                if event.code == evdev.ecodes.ABS_Y:  # Throttle
+                    throttle = event.value
+                elif event.code == evdev.ecodes.ABS_X:  # Steering
+                    steering = event.value
 
             control_motors(throttle, steering)
 
