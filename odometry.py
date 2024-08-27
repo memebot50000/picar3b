@@ -4,30 +4,12 @@ import time
 import subprocess
 import io
 from PIL import Image
-from pymavlink import mavutil
-
-# Initialize MAVLink connection
-master = mavutil.mavlink_connection('udpout:localhost:14550')
 
 # Function to capture a frame using rpicam-still
 def capture_frame():
     result = subprocess.run(['rpicam-still', '-n', '-o', '-', '-t', '1', '--width', '640', '--height', '480'], capture_output=True)
     image = Image.open(io.BytesIO(result.stdout))
     return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-
-# Function to send position to QGroundControl
-def send_position(lat, lon, alt, vx, vy, vz, heading):
-    master.mav.global_position_int_send(
-        int(time.time() * 1000),  # time_boot_ms
-        int(lat * 1e7),  # lat
-        int(lon * 1e7),  # lon
-        int(alt * 1000),  # alt
-        int(vx * 100),   # vx
-        int(vy * 100),   # vy
-        int(vz * 100),   # vz
-        int(heading * 100),  # hdg
-        0  # relative_alt
-    )
 
 def main():
     # Initialize variables for odometry
@@ -38,7 +20,7 @@ def main():
     # Starting GPS position (36 Cummings Rd, Newton, MA)
     lat, lon = 42.3300, -71.2089
 
-    print("Visual Odometry and MAVLink Communication Started")
+    print("Visual Odometry Started")
     print("Press Ctrl+C to stop")
 
     try:
@@ -71,14 +53,12 @@ def main():
             lat += y * 1e-7  # Approximate conversion, needs calibration
             lon += x * 1e-7  # Approximate conversion, needs calibration
 
-            # Send position to QGroundControl
-            send_position(lat, lon, 0, fx, fy, 0, heading)
-
             # Update previous frame
             prev_frame = gray
 
-            # Print current position (for debugging)
+            # Print current position and GPS coordinates
             print(f"Position: ({x:.2f}, {y:.2f}), Heading: {heading:.2f}")
+            print(f"GPS: Lat: {lat:.7f}, Lon: {lon:.7f}")
 
             # Add a small delay
             time.sleep(0.1)
@@ -88,7 +68,7 @@ def main():
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
-        print("Visual Odometry and MAVLink Communication Stopped")
+        print("Visual Odometry Stopped")
 
 if __name__ == "__main__":
     main()
