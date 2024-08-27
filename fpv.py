@@ -3,9 +3,7 @@ import evdev
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from picamera2 import Picamera2
-from picamera2.encoders import JpegEncoder
-from picamera2.outputs import FileOutput
+import cv2
 import io
 import subprocess
 
@@ -29,10 +27,9 @@ def normalize(value, min_val, max_val):
     return (value - min_val) / (max_val - min_val)
 
 # Camera Setup
-picam2 = Picamera2()
-picam2.configure(picam2.create_video_configuration(main={"size": (640, 480)}))
-encoder = JpegEncoder()
-output = FileOutput()
+camera = cv2.VideoCapture(0)  # Use 0 for the first USB camera
+camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 # Streaming Setup
 class StreamingHandler(BaseHTTPRequestHandler):
@@ -67,14 +64,15 @@ class StreamingHandler(BaseHTTPRequestHandler):
             self.end_headers()
             try:
                 while True:
-                    with output.condition:
-                        output.condition.wait()
-                        frame = output.buffer.getvalue()
+                    ret, frame = camera.read()
+                    if not ret:
+                        continue
+                    _, jpeg = cv2.imencode('.jpg', frame)
                     self.wfile.write(b'--FRAME\r\n')
                     self.send_header('Content-Type', 'image/jpeg')
-                    self.send_header('Content-Length', len(frame))
+                    self.send_header('Content-Length', len(jpeg))
                     self.end_headers()
-                    self.wfile.write(frame)
+                    self.wfile.write(jpeg.tobytes())
                     self.wfile.write(b'\r\n')
             except Exception as e:
                 print(f"Removed streaming client {self.client_address}: {str(e)}")
@@ -133,9 +131,6 @@ def rc_car_control():
 
     print("RC Car Control Ready. Use the Spektrum controller to control the car. Press Ctrl+C to quit.")
 
-    # Start video streaming
-    picam2.start_recording(encoder, output)
-    
     # Get the Raspberry Pi's IP address
     ip_address = get_ip_address()
     
@@ -166,7 +161,7 @@ def rc_car_control():
         print(f"An error occurred: {e}")
     finally:
         stop()
-        picam2.stop_recording()
+        camera.release()
         server.shutdown()
         print("RC Car Control stopped.")
 
