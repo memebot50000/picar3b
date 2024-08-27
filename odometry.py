@@ -11,9 +11,6 @@ def capture_frame():
     image = Image.open(io.BytesIO(result.stdout))
     return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
-def deg2rad(deg):
-    return (math.pi / 180.0) * deg
-
 class LowPassFilter:
     def __init__(self, tap_coefs):
         self.tap_coefs = tap_coefs
@@ -31,11 +28,6 @@ class RCCarOpticalFlow:
         self.scalar_x = 1.0
         self.scalar_y = 1.0
         self.rate = 20.0
-        self.roll = 0
-        self.pitch = 0
-        self.yaw = 0
-        self.prev_roll = 0
-        self.prev_pitch = 0
         self.velocity_x = 0
         self.velocity_y = 0
         self.position_x = 0
@@ -45,12 +37,8 @@ class RCCarOpticalFlow:
         self.tap_coefs = [0.05, 0.2, 0.5, 0.2, 0.05]
         self.low_pass_filter_x = LowPassFilter(self.tap_coefs)
         self.low_pass_filter_y = LowPassFilter(self.tap_coefs)
-        self.low_pass_filter_roll = LowPassFilter(self.tap_coefs)
-        self.low_pass_filter_pitch = LowPassFilter(self.tap_coefs)
         self.low_pass_filter_corrected_x = LowPassFilter(self.tap_coefs)
         self.low_pass_filter_corrected_y = LowPassFilter(self.tap_coefs)
-        self.initialise = True
-        self.initial_yaw = 0
 
         # Camera calibration data (replace with actual values from manufacturer)
         self.camera_matrix = np.array([[462.0, 0, 320.5],
@@ -59,11 +47,10 @@ class RCCarOpticalFlow:
         self.dist_coeffs = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
 
     def reset_pose(self):
-        self.yaw = 0
-        self.initial_yaw = 0
-        self.initialise = True
         self.position_x = 0
         self.position_y = 0
+        self.velocity_x = 0
+        self.velocity_y = 0
 
     def undistort_image(self, image):
         h, w = image.shape[:2]
@@ -88,36 +75,23 @@ class RCCarOpticalFlow:
 
             x_shift, y_shift = flow.mean(axis=(0, 1))
 
-            delta_rotation_roll = (self.roll - self.prev_roll) * self.rate
-            delta_rotation_pitch = (self.pitch - self.prev_pitch) * self.rate
-            self.prev_roll = self.roll
-            self.prev_pitch = self.pitch
-
             x_shift = self.rate * self.altitude * math.atan2(self.scalar_x * x_shift, 500)
             y_shift = self.rate * self.altitude * math.atan2(self.scalar_y * y_shift, 500)
 
             motion_x = self.low_pass_filter_x.filter(x_shift)
             motion_y = self.low_pass_filter_y.filter(y_shift)
-            delta_rotation_roll = self.low_pass_filter_roll.filter(delta_rotation_roll)
-            delta_rotation_pitch = self.low_pass_filter_pitch.filter(delta_rotation_pitch)
 
-            motion_corrected_x = motion_x + delta_rotation_pitch
-            motion_corrected_y = motion_y - delta_rotation_roll
-
-            self.velocity_x = self.low_pass_filter_corrected_x.filter(motion_corrected_x)
-            self.velocity_y = self.low_pass_filter_corrected_y.filter(motion_corrected_y)
+            self.velocity_x = self.low_pass_filter_corrected_x.filter(motion_x)
+            self.velocity_y = self.low_pass_filter_corrected_y.filter(motion_y)
 
             self.update_pose()
 
     def update_pose(self):
-        velocity_global_x = self.velocity_x * math.cos(self.yaw) - self.velocity_y * math.sin(self.yaw)
-        velocity_global_y = self.velocity_x * math.sin(self.yaw) + self.velocity_y * math.cos(self.yaw)
-        self.position_x += velocity_global_x * (1.0 / self.rate)
-        self.position_y += velocity_global_y * (1.0 / self.rate)
+        self.position_x += self.velocity_x * (1.0 / self.rate)
+        self.position_y += self.velocity_y * (1.0 / self.rate)
 
         print(f"Position: ({self.position_x:.4f}, {self.position_y:.4f})")
         print(f"Velocity: ({self.velocity_x:.4f}, {self.velocity_y:.4f})")
-        print(f"Yaw: {math.degrees(self.yaw):.2f} degrees")
         print("--------------------")
 
     def run(self):
