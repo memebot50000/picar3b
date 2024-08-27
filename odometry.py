@@ -28,6 +28,23 @@ def undistort_image(image):
     undistorted = cv2.undistort(image, camera_matrix, dist_coeffs, None, newcameramtx)
     return undistorted
 
+class SimpleKalmanFilter:
+    def __init__(self, process_variance, measurement_variance, initial_value=0):
+        self.process_variance = process_variance
+        self.measurement_variance = measurement_variance
+        self.estimate = initial_value
+        self.estimate_error = 1
+
+    def update(self, measurement):
+        prediction = self.estimate
+        prediction_error = self.estimate_error + self.process_variance
+
+        kalman_gain = prediction_error / (prediction_error + self.measurement_variance)
+        self.estimate = prediction + kalman_gain * (measurement - prediction)
+        self.estimate_error = (1 - kalman_gain) * prediction_error
+
+        return self.estimate
+
 def main():
     prev_frame = None
     x, y = 0, 0
@@ -36,12 +53,12 @@ def main():
     lat, lon = 42.3300, -71.2089
 
     # Adjusted parameters
-    scale = 2.0
-    smoothing_window = 3
-    x_smooth = deque([0] * smoothing_window, maxlen=smoothing_window)
-    y_smooth = deque([0] * smoothing_window, maxlen=smoothing_window)
+    scale = 0.5  # Reduced scale factor
+    motion_threshold = 0.001  # Threshold to ignore small movements
 
-    gps_factor = 1e-5
+    # Kalman filters for x and y
+    kf_x = SimpleKalmanFilter(process_variance=1e-5, measurement_variance=0.1**2)
+    kf_y = SimpleKalmanFilter(process_variance=1e-5, measurement_variance=0.1**2)
 
     print("Visual Odometry Started")
     print("Press Ctrl+C to stop")
@@ -50,10 +67,7 @@ def main():
         while True:
             image = capture_frame()
             
-            # Undistort the image using calibration data
             undistorted = undistort_image(image)
-            
-            # Rotate the image 180 degrees to account for camera orientation
             rotated = cv2.rotate(undistorted, cv2.ROTATE_180)
 
             if prev_frame is None:
@@ -62,27 +76,31 @@ def main():
 
             gray = cv2.cvtColor(rotated, cv2.COLOR_BGR2GRAY)
 
-            flow = cv2.calcOpticalFlowFarneback(prev_frame, gray, None, 0.5, 3, 15, 3, 7, 1.5, 0)
+            # Adjusted optical flow parameters
+            flow = cv2.calcOpticalFlowFarneback(prev_frame, gray, None, 0.5, 5, 15, 3, 5, 1.1, 0)
 
             fx, fy = calculate_average_flow(flow)
             
-            # Swap x and y to account for camera orientation
-            x += fy * scale
-            y -= fx * scale
-            x_smooth.append(x)
-            y_smooth.append(y)
-            x_smoothed = sum(x_smooth) / smoothing_window
-            y_smoothed = sum(y_smooth) / smoothing_window
+            # Apply motion threshold
+            if abs(fx) > motion_threshold or abs(fy) > motion_threshold:
+                x += fy * scale
+                y -= fx * scale
+            else:
+                fx, fy = 0, 0
 
-            heading = np.arctan2(-fx, fy)  # Adjusted for camera orientation
+            # Apply Kalman filter
+            x_filtered = kf_x.update(x)
+            y_filtered = kf_y.update(y)
 
-            lat += y_smoothed * gps_factor
-            lon += x_smoothed * gps_factor
+            heading = np.arctan2(-fx, fy) if fx != 0 or fy != 0 else heading
+
+            lat += y_filtered * 1e-7  # Adjusted GPS factor
+            lon += x_filtered * 1e-7  # Adjusted GPS factor
 
             prev_frame = gray
 
             print(f"Raw Position: ({x:.4f}, {y:.4f})")
-            print(f"Smoothed Position: ({x_smoothed:.4f}, {y_smoothed:.4f})")
+            print(f"Filtered Position: ({x_filtered:.4f}, {y_filtered:.4f})")
             print(f"Heading: {heading:.2f}")
             print(f"GPS: Lat: {lat:.7f}, Lon: {lon:.7f}")
             print("--------------------")
