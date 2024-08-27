@@ -6,7 +6,6 @@ import io
 from PIL import Image
 from collections import deque
 
-# Function to capture a frame using rpicam-still
 def capture_frame():
     result = subprocess.run(['rpicam-still', '-n', '-o', '-', '-t', '1', '--width', '640', '--height', '480'], capture_output=True)
     image = Image.open(io.BytesIO(result.stdout))
@@ -17,20 +16,32 @@ def calculate_average_flow(flow):
     fx, fy = flow[h//4:3*h//4, w//4:3*w//4].mean(axis=(0, 1))
     return fx, fy
 
+# Camera calibration data (replace with actual values from manufacturer)
+camera_matrix = np.array([[462.0, 0, 320.5],
+                          [0, 462.0, 240.5],
+                          [0, 0, 1]])
+dist_coeffs = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+
+def undistort_image(image):
+    h, w = image.shape[:2]
+    newcameramtx, roi = cv2.getOptimalNewCameraMatrix(camera_matrix, dist_coeffs, (w,h), 1, (w,h))
+    undistorted = cv2.undistort(image, camera_matrix, dist_coeffs, None, newcameramtx)
+    return undistorted
+
 def main():
-    # Initialize variables for odometry
     prev_frame = None
-    x, y = 0, 0  # Starting position
+    x, y = 0, 0
     heading = 0
 
-    # Starting GPS position (36 Cummings Rd, Newton, MA)
     lat, lon = 42.3300, -71.2089
 
-    # Parameters for tuning
-    scale = 0.001  # This scale factor needs to be calibrated
-    smoothing_window = 5
+    # Adjusted parameters
+    scale = 2.0
+    smoothing_window = 3
     x_smooth = deque([0] * smoothing_window, maxlen=smoothing_window)
     y_smooth = deque([0] * smoothing_window, maxlen=smoothing_window)
+
+    gps_factor = 1e-5
 
     print("Visual Odometry Started")
     print("Press Ctrl+C to stop")
@@ -38,47 +49,45 @@ def main():
     try:
         while True:
             image = capture_frame()
+            
+            # Undistort the image using calibration data
+            undistorted = undistort_image(image)
+            
+            # Rotate the image 180 degrees to account for camera orientation
+            rotated = cv2.rotate(undistorted, cv2.ROTATE_180)
 
             if prev_frame is None:
-                prev_frame = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                prev_frame = cv2.cvtColor(rotated, cv2.COLOR_BGR2GRAY)
                 continue
 
-            # Convert to grayscale
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            gray = cv2.cvtColor(rotated, cv2.COLOR_BGR2GRAY)
 
-            # Calculate optical flow
-            flow = cv2.calcOpticalFlowFarneback(prev_frame, gray, None, 0.5, 5, 15, 3, 5, 1.2, 0)
+            flow = cv2.calcOpticalFlowFarneback(prev_frame, gray, None, 0.5, 3, 15, 3, 7, 1.5, 0)
 
-            # Calculate average movement
             fx, fy = calculate_average_flow(flow)
             
-            # Update position with smoothing
-            x += fx * scale
-            y += fy * scale
+            # Swap x and y to account for camera orientation
+            x += fy * scale
+            y -= fx * scale
             x_smooth.append(x)
             y_smooth.append(y)
             x_smoothed = sum(x_smooth) / smoothing_window
             y_smoothed = sum(y_smooth) / smoothing_window
 
-            # Update heading (simplified)
-            heading = np.arctan2(fy, fx)
+            heading = np.arctan2(-fx, fy)  # Adjusted for camera orientation
 
-            # Update GPS position (very simplified, you need to calibrate this)
-            lat += y_smoothed * 1e-7  # Approximate conversion, needs calibration
-            lon += x_smoothed * 1e-7  # Approximate conversion, needs calibration
+            lat += y_smoothed * gps_factor
+            lon += x_smoothed * gps_factor
 
-            # Update previous frame
             prev_frame = gray
 
-            # Print current position and GPS coordinates
             print(f"Raw Position: ({x:.4f}, {y:.4f})")
             print(f"Smoothed Position: ({x_smoothed:.4f}, {y_smoothed:.4f})")
             print(f"Heading: {heading:.2f}")
             print(f"GPS: Lat: {lat:.7f}, Lon: {lon:.7f}")
             print("--------------------")
 
-            # Add a small delay
-            time.sleep(0.05)  # Adjusted for potentially faster updates
+            time.sleep(0.1)
 
     except KeyboardInterrupt:
         print("\nProgram interrupted by user. Exiting...")
