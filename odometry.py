@@ -4,115 +4,137 @@ import time
 import subprocess
 import io
 from PIL import Image
-from collections import deque
+import math
 
 def capture_frame():
     result = subprocess.run(['rpicam-still', '-n', '-o', '-', '-t', '1', '--width', '640', '--height', '480'], capture_output=True)
     image = Image.open(io.BytesIO(result.stdout))
     return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
-def calculate_average_flow(flow):
-    h, w = flow.shape[:2]
-    fx, fy = flow[h//4:3*h//4, w//4:3*w//4].mean(axis=(0, 1))
-    return fx, fy
+def deg2rad(deg):
+    return (math.pi / 180.0) * deg
 
-# Camera calibration data (replace with actual values from manufacturer)
-camera_matrix = np.array([[462.0, 0, 320.5],
-                          [0, 462.0, 240.5],
-                          [0, 0, 1]])
-dist_coeffs = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+class LowPassFilter:
+    def __init__(self, tap_coefs):
+        self.tap_coefs = tap_coefs
+        self.len_coefs = len(tap_coefs)
+        self.sample_buffer = [0] * self.len_coefs
 
-def undistort_image(image):
-    h, w = image.shape[:2]
-    newcameramtx, roi = cv2.getOptimalNewCameraMatrix(camera_matrix, dist_coeffs, (w,h), 1, (w,h))
-    undistorted = cv2.undistort(image, camera_matrix, dist_coeffs, None, newcameramtx)
-    return undistorted
+    def filter(self, data):
+        self.sample_buffer.append(data)
+        if len(self.sample_buffer) > self.len_coefs:
+            self.sample_buffer.pop(0)
+        return sum(c * s for c, s in zip(self.tap_coefs, self.sample_buffer))
 
-class SimpleKalmanFilter:
-    def __init__(self, process_variance, measurement_variance, initial_value=0):
-        self.process_variance = process_variance
-        self.measurement_variance = measurement_variance
-        self.estimate = initial_value
-        self.estimate_error = 1
+class RCCarOpticalFlow:
+    def __init__(self):
+        self.scalar_x = 1.0
+        self.scalar_y = 1.0
+        self.rate = 20.0
+        self.roll = 0
+        self.pitch = 0
+        self.yaw = 0
+        self.prev_roll = 0
+        self.prev_pitch = 0
+        self.velocity_x = 0
+        self.velocity_y = 0
+        self.position_x = 0
+        self.position_y = 0
+        self.prev_flow_process_time = 0
+        self.altitude = 0.0762  # 3 inches in meters
+        self.tap_coefs = [0.05, 0.2, 0.5, 0.2, 0.05]
+        self.low_pass_filter_x = LowPassFilter(self.tap_coefs)
+        self.low_pass_filter_y = LowPassFilter(self.tap_coefs)
+        self.low_pass_filter_roll = LowPassFilter(self.tap_coefs)
+        self.low_pass_filter_pitch = LowPassFilter(self.tap_coefs)
+        self.low_pass_filter_corrected_x = LowPassFilter(self.tap_coefs)
+        self.low_pass_filter_corrected_y = LowPassFilter(self.tap_coefs)
+        self.initialise = True
+        self.initial_yaw = 0
 
-    def update(self, measurement):
-        prediction = self.estimate
-        prediction_error = self.estimate_error + self.process_variance
+        # Camera calibration data (replace with actual values from manufacturer)
+        self.camera_matrix = np.array([[462.0, 0, 320.5],
+                                       [0, 462.0, 240.5],
+                                       [0, 0, 1]])
+        self.dist_coeffs = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
 
-        kalman_gain = prediction_error / (prediction_error + self.measurement_variance)
-        self.estimate = prediction + kalman_gain * (measurement - prediction)
-        self.estimate_error = (1 - kalman_gain) * prediction_error
+    def reset_pose(self):
+        self.yaw = 0
+        self.initial_yaw = 0
+        self.initialise = True
+        self.position_x = 0
+        self.position_y = 0
 
-        return self.estimate
+    def undistort_image(self, image):
+        h, w = image.shape[:2]
+        newcameramtx, roi = cv2.getOptimalNewCameraMatrix(self.camera_matrix, self.dist_coeffs, (w,h), 1, (w,h))
+        return cv2.undistort(image, self.camera_matrix, self.dist_coeffs, None, newcameramtx)
 
-def main():
-    prev_frame = None
-    x, y = 0, 0
-    heading = 0
+    def process_flow(self):
+        if (time.time() - self.prev_flow_process_time) >= (1.0 / self.rate):
+            self.prev_flow_process_time = time.time()
 
-    lat, lon = 42.3300, -71.2089
-
-    # Adjusted parameters
-    scale = 0.5  # Reduced scale factor
-    motion_threshold = 0.001  # Threshold to ignore small movements
-
-    # Kalman filters for x and y
-    kf_x = SimpleKalmanFilter(process_variance=1e-5, measurement_variance=0.1**2)
-    kf_y = SimpleKalmanFilter(process_variance=1e-5, measurement_variance=0.1**2)
-
-    print("Visual Odometry Started")
-    print("Press Ctrl+C to stop")
-
-    try:
-        while True:
             image = capture_frame()
-            
-            undistorted = undistort_image(image)
+            undistorted = self.undistort_image(image)
             rotated = cv2.rotate(undistorted, cv2.ROTATE_180)
-
-            if prev_frame is None:
-                prev_frame = cv2.cvtColor(rotated, cv2.COLOR_BGR2GRAY)
-                continue
-
             gray = cv2.cvtColor(rotated, cv2.COLOR_BGR2GRAY)
 
-            # Adjusted optical flow parameters
-            flow = cv2.calcOpticalFlowFarneback(prev_frame, gray, None, 0.5, 5, 15, 3, 5, 1.1, 0)
+            if not hasattr(self, 'prev_gray'):
+                self.prev_gray = gray
+                return
 
-            fx, fy = calculate_average_flow(flow)
-            
-            # Apply motion threshold
-            if abs(fx) > motion_threshold or abs(fy) > motion_threshold:
-                x += fy * scale
-                y -= fx * scale
-            else:
-                fx, fy = 0, 0
+            flow = cv2.calcOpticalFlowFarneback(self.prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+            self.prev_gray = gray
 
-            # Apply Kalman filter
-            x_filtered = kf_x.update(x)
-            y_filtered = kf_y.update(y)
+            x_shift, y_shift = flow.mean(axis=(0, 1))
 
-            heading = np.arctan2(-fx, fy) if fx != 0 or fy != 0 else heading
+            delta_rotation_roll = (self.roll - self.prev_roll) * self.rate
+            delta_rotation_pitch = (self.pitch - self.prev_pitch) * self.rate
+            self.prev_roll = self.roll
+            self.prev_pitch = self.pitch
 
-            lat += y_filtered * 1e-7  # Adjusted GPS factor
-            lon += x_filtered * 1e-7  # Adjusted GPS factor
+            x_shift = self.rate * self.altitude * math.atan2(self.scalar_x * x_shift, 500)
+            y_shift = self.rate * self.altitude * math.atan2(self.scalar_y * y_shift, 500)
 
-            prev_frame = gray
+            motion_x = self.low_pass_filter_x.filter(x_shift)
+            motion_y = self.low_pass_filter_y.filter(y_shift)
+            delta_rotation_roll = self.low_pass_filter_roll.filter(delta_rotation_roll)
+            delta_rotation_pitch = self.low_pass_filter_pitch.filter(delta_rotation_pitch)
 
-            print(f"Raw Position: ({x:.4f}, {y:.4f})")
-            print(f"Filtered Position: ({x_filtered:.4f}, {y_filtered:.4f})")
-            print(f"Heading: {heading:.2f}")
-            print(f"GPS: Lat: {lat:.7f}, Lon: {lon:.7f}")
-            print("--------------------")
+            motion_corrected_x = motion_x + delta_rotation_pitch
+            motion_corrected_y = motion_y - delta_rotation_roll
 
-            time.sleep(0.1)
+            self.velocity_x = self.low_pass_filter_corrected_x.filter(motion_corrected_x)
+            self.velocity_y = self.low_pass_filter_corrected_y.filter(motion_corrected_y)
 
-    except KeyboardInterrupt:
-        print("\nProgram interrupted by user. Exiting...")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        print("Visual Odometry Stopped")
+            self.update_pose()
+
+    def update_pose(self):
+        velocity_global_x = self.velocity_x * math.cos(self.yaw) - self.velocity_y * math.sin(self.yaw)
+        velocity_global_y = self.velocity_x * math.sin(self.yaw) + self.velocity_y * math.cos(self.yaw)
+        self.position_x += velocity_global_x * (1.0 / self.rate)
+        self.position_y += velocity_global_y * (1.0 / self.rate)
+
+        print(f"Position: ({self.position_x:.4f}, {self.position_y:.4f})")
+        print(f"Velocity: ({self.velocity_x:.4f}, {self.velocity_y:.4f})")
+        print(f"Yaw: {math.degrees(self.yaw):.2f} degrees")
+        print("--------------------")
+
+    def run(self):
+        print("RC Car Optical Flow Started")
+        print("Press Ctrl+C to stop")
+
+        try:
+            while True:
+                self.process_flow()
+                time.sleep(1.0 / self.rate)
+        except KeyboardInterrupt:
+            print("\nProgram interrupted by user. Exiting...")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        finally:
+            print("RC Car Optical Flow Stopped")
 
 if __name__ == "__main__":
-    main()
+    rc_car_flow = RCCarOpticalFlow()
+    rc_car_flow.run()
